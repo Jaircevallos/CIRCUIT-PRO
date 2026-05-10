@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Pro PWA</title>
+<!-- Configuración para modo App (Offline) -->
+<meta name="theme-color" content="#1a1a1a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<style>
+ body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; touch-action: none; }
+ #ui { position: absolute; top: 0; left: 0; width: 260px; height: 100vh; background: #252525; border-right: 2px solid #444; z-index: 10; display: flex; flex-direction: column; }
+ .menu-content { overflow-y: auto; flex-grow: 1; padding: 15px; }
+ details { background: #333; border-radius: 8px; margin-bottom: 10px; border: 1px solid #444; }
+ summary { padding: 12px; cursor: pointer; font-weight: bold; color: #0f0; outline: none; }
+ button { width: 100%; padding: 10px; margin: 5px 0; cursor: pointer; background: #444; color: #eee; border: none; border-radius: 5px; text-align: left; font-size: 0.85em; transition: 0.2s; }
+ button:hover:not(:disabled) { background: #555; color: #0f0; }
+ button:disabled { opacity: 0.4; cursor: not-allowed; color: #888; }
+ .pwr-btn { background: #1a1a1a; color: #0f0; border: 2px solid #0f0; text-align: center; font-size: 1.1em; margin: 15px; padding: 15px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+ .pwr-on { background: #0f0 !important; color: #000 !important; box-shadow: 0 0 20px #0f0; }
+ #info-panel { position: absolute; top: 20px; right: 20px; background: rgba(30,30,30,0.95); border: 2px solid #0f0; padding: 15px; border-radius: 12px; width: 280px; z-index: 100; pointer-events: none; }
+ #win-msg { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.95); border: 4px solid #0f0; padding: 30px; border-radius: 20px; text-align: center; z-index: 1000; box-shadow: 0 0 50px #0f0; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="menu-content">
+        <h2 style="color:#0f0; text-align: center; margin-top:0;">CIRCUIT PRO</h2>
+        <details open>
+            <summary>🛠 COMPONENTES</summary>
+            <button onclick="nuevo('pila', 9)">🔋 Batería 9V</button>
+            <button onclick="nuevo('pila', 1.5)">🔋 Pila 1.5V</button>
+            <button onclick="nuevo('led', 0)">🚨 LED Pro</button>
+            <button onclick="nuevo('bombilla', 0)">💡 Bombilla Realista</button>
+            <button onclick="nuevo('switch', 0)">⏻ Interruptor</button>
+        </details>
+        <details>
+            <summary>📖 EJEMPLOS</summary>
+            <button onclick="cargarEjemplo('serie')">🔗 Circuito Serie</button>
+            <button onclick="cargarEjemplo('paralelo')">平行 Circuito Paralelo</button>
+            <button onclick="cargarEjemplo('mixto')">🌀 Circuito Mixto</button>
+        </details>
+        <details open>
+            <summary>🏆 NIVELES</summary>
+            <div id="btn-libre-container"></div>
+            <hr style="border: 0.5px solid #444; margin: 10px 0;">
+            <div id="btns-niveles"></div>
+        </details>
+        <button onclick="limpiar()" style="color:#ff4444; background: #322; text-align:center;">🗑 Limpiar Mesa</button>
+    </div>
+    <button id="mainPwr" class="pwr-btn" onclick="togglePower()">▶ INICIAR SIMULACIÓN</button>
+</div>
+
+<div id="info-panel">
+    <b id="lvl-title" style="color:#0f0;">NIVEL 1</b>
+    <p id="lvl-desc" style="font-size:0.85em; color:#ccc;">Conecta una batería de 9V a una bombilla.</p>
+</div>
+
+<div id="win-msg">
+    <h1 id="win-title" style="color:#0f0; margin-top:0;">¡NIVEL COMPLETADO! 🌟</h1>
+    <p id="win-text">Has dominado este circuito perfectamente.</p>
+    <button id="next-btn" onclick="siguienteNivel()" style="background:#0f0; color:#000; font-weight:bold; width:100%; padding:15px; border-radius:8px;">SIGUIENTE NIVEL ➔</button>
+</div>
+
+<canvas id="sim"></canvas>
+
+<script>
+// --- LÓGICA DE INSTALACIÓN (OFFLINE) ---
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const swCode = `
+      const cacheName = 'circuit-pro-v1';
+      self.addEventListener('install', e => {
+        e.waitUntil(caches.open(cacheName).then(cache => cache.addAll(['./'])));
+      });
+      self.addEventListener('fetch', e => {
+        e.respondWith(caches.match(e.request).then(res => res || fetch(e.request)));
+      });
+    `;
+    const blob = new Blob([swCode], { type: 'text/javascript' });
+    navigator.serviceWorker.register(URL.createObjectURL(blob));
+  });
+}
+
+// --- TU CÓDIGO DE SIMULACIÓN ---
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let componentes = [], cables = [], power = false, seleccionado = null, tempCable = null;
+let dragging = false, dragPoint = null, offset = {x: 0, y: 0};
+let nivelActual = 0, nivelMaximo = 0, gano = false;
+
+const RETOS = [
+    { t: "NIVEL 1", d: "Conecta una batería de 9V a una bombilla.", check: () => componentes.some(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0) },
+    { t: "NIVEL 2", d: "Usa un interruptor para encender un LED.", check: () => componentes.some(c => c.tipo === 'led' && calcularVoltaje(c) > 0) && componentes.some(c => c.tipo === 'switch') },
+    { t: "NIVEL 3", d: "Serie: Enciende 2 bombillas al mismo tiempo.", check: () => componentes.filter(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0).length >= 2 },
+    { t: "NIVEL 4", d: "Paralelo: 2 bombillas brillando igual.", check: () => componentes.filter(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0).length >= 2 },
+    { t: "NIVEL 5", d: "Reto: Usa una pila de 1.5V para encender un LED.", check: () => componentes.some(c => c.tipo === 'led' && calcularVoltaje(c) > 0) && componentes.some(c => c.tipo === 'pila' && c.v == 1.5) },
+    { t: "NIVEL 6", d: "Mixto: Enciende 3 bombillas a la vez.", check: () => componentes.filter(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0).length >= 3 },
+    { t: "NIVEL 7", d: "Semáforo: Enciende 2 LEDs usando 2 interruptores.", check: () => componentes.filter(c => c.tipo === 'led' && calcularVoltaje(c) > 0).length >= 2 },
+    { t: "NIVEL 8", d: "Doble Switch: Dos interruptores para una bombilla.", check: () => componentes.filter(c => c.tipo === 'switch').length >= 2 && componentes.some(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0) },
+    { t: "NIVEL 9", d: "Poder: Enciende 4 bombillas usando 2 baterías.", check: () => componentes.filter(c => c.tipo === 'bombilla' && calcularVoltaje(c) > 0).length >= 4 && componentes.filter(c => c.tipo === 'pila').length >= 2 },
+    { t: "NIVEL 10", d: "Final: ¡Haz brillar 5 componentes a la vez!", check: () => componentes.filter(c => (c.tipo === 'bombilla' || c.tipo === 'led') && calcularVoltaje(c) > 0).length >= 5 }
+];
+
+function playSound(freq = 440) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.1);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+}
+
+function actualizarBotones() {
+    const div = document.getElementById('btns-niveles'); div.innerHTML = "";
+    RETOS.forEach((r, i) => {
+        const btn = document.createElement('button');
+        const bloqueado = i > nivelMaximo;
+        btn.innerHTML = (bloqueado ? "🔒 " : "") + r.t;
+        btn.disabled = bloqueado; btn.onclick = () => cambiarNivel(i);
+        div.appendChild(btn);
+    });
+    const libreDiv = document.getElementById('btn-libre-container'); libreDiv.innerHTML = "";
+    const btnLibre = document.createElement('button');
+    const libreBloqueado = nivelMaximo < 5;
+    btnLibre.innerHTML = (libreBloqueado ? "🔒 " : "🌟 ") + "MODO LIBRE";
+    btnLibre.disabled = libreBloqueado;
+    btnLibre.style.background = libreBloqueado ? "#333" : "#1e3a2a";
+    btnLibre.onclick = () => cambiarNivel(-1);
+    libreDiv.appendChild(btnLibre);
+}
+
+function cambiarNivel(n) {
+    nivelActual = n; gano = false;
+    document.getElementById('win-msg').style.display = "none";
+    limpiar();
+    if(n === -1) { document.getElementById('lvl-title').innerText = "MODO LIBRE"; document.getElementById('lvl-desc').innerText = "¡Sin límites!"; }
+    else { document.getElementById('lvl-title').innerText = RETOS[n].t; document.getElementById('lvl-desc').innerText = RETOS[n].d; }
+    playSound(700);
+}
+
+function siguienteNivel() {
+    if (nivelActual < RETOS.length - 1) cambiarNivel(nivelActual + 1);
+    else cambiarNivel(-1);
+}
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+window.addEventListener('resize', resize); resize();
+
+class Componente {
+    constructor(tipo, x, y, v) { this.tipo = tipo; this.x = x; this.y = y; this.v = v; this.rot = 0; this.on = true; }
+    getBornes() {
+        let pts = (this.tipo==='pila') ? [{id:'+',x:72,y:25},{id:'-',x:72,y:55}] : 
+                 (this.tipo==='led') ? [{id:'+',x:30,y:75},{id:'-',x:50,y:75}] : 
+                 (this.tipo==='bombilla') ? [{id:'a',x:10,y:60},{id:'b',x:25,y:75}] : 
+                 [{id:'a',x:10,y:40},{id:'b',x:70,y:40}];
+        return pts.map(p => {
+            let rx = p.x-40, ry = p.y-40, cos = Math.cos(this.rot), sin = Math.sin(this.rot);
+            return { id:p.id, comp:this, x:this.x+40+(rx*cos-ry*sin), y:this.y+40+(rx*sin+ry*cos) };
+        });
+    }
+    dibujar() {
+        ctx.save(); ctx.translate(this.x+40, this.y+40); ctx.rotate(this.rot);
+        if(seleccionado === this) { ctx.strokeStyle = "rgba(0,255,0,0.3)"; ctx.lineWidth = 2; ctx.strokeRect(-45, -45, 90, 90); }
+        if(this.tipo === 'pila') {
+            ctx.fillStyle = '#222'; ctx.fillRect(-35, -25, 60, 50); ctx.fillStyle = '#d47a24'; ctx.fillRect(25, -25, 10, 50);
+            ctx.fillStyle = 'white'; ctx.fillText(this.v+"V", -10, 5);
+        } else if(this.tipo === 'bombilla') {
+            let v = power ? calcularVoltaje(this) : 0;
+            ctx.fillStyle = '#888'; ctx.fillRect(-15, 10, 30, 20); ctx.beginPath(); ctx.arc(0, -10, 25, 0, 7);
+            if(v > 0) { ctx.fillStyle = '#ff0'; ctx.shadowBlur = 35; ctx.shadowColor = "yellow"; } else ctx.fillStyle = "rgba(200,200,200,0.3)";
+            ctx.fill();
+        } else if(this.tipo === 'led') {
+            let v = power ? calcularVoltaje(this) : 0;
+            ctx.fillStyle = '#555'; ctx.fillRect(-20, 18, 40, 4);
+            let grad = ctx.createLinearGradient(-18, 0, 18, 0);
+            if(v > 0) { grad.addColorStop(0, '#f00'); grad.addColorStop(0.5, '#ff6666'); grad.addColorStop(1, '#f00'); ctx.shadowBlur = 25; ctx.shadowColor = "red"; } 
+            else { grad.addColorStop(0, '#411'); grad.addColorStop(0.5, '#622'); grad.addColorStop(1, '#411'); }
+            ctx.fillStyle = grad; ctx.beginPath(); ctx.moveTo(-18, 20); ctx.lineTo(-18, -5); ctx.bezierCurveTo(-18, -25, 18, -25, 18, -5); ctx.lineTo(18, 20); ctx.closePath(); ctx.fill();
+        } else if(this.tipo === 'switch') {
+            ctx.fillStyle = '#333'; ctx.fillRect(-30, -10, 60, 20); ctx.fillStyle = this.on ? '#0f0' : '#666'; ctx.fillRect(this.on ? 5 : -25, -15, 20, 30);
+        }
+        ctx.restore();
+        this.getBornes().forEach(b => {
+            ctx.fillStyle = b.id==='+'?'#ff4444':(b.id==='-'?'#111':'#888');
+            ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, 7); ctx.fill();
+        });
+    }
+}
+
+function obtenerNodosConectados(compIn, bIdIn) {
+    let red = new Set(); let stack = [{c: compIn, b: bIdIn}];
+    while(stack.length > 0) {
+        let actual = stack.pop(); let id = actual.c.x + "," + actual.c.y + "," + actual.b;
+        if(red.has(id)) continue; red.add(id);
+        cables.forEach(cb => {
+            if(cb.sC === actual.c && cb.sB === actual.b) stack.push({c: cb.eC, b: cb.eB});
+            if(cb.eC === actual.c && cb.eB === actual.b) stack.push({c: cb.sC, b: cb.sB});
+        });
+        if(actual.c.tipo !== 'pila' && (actual.c.tipo !== 'switch' || actual.c.on)) {
+            actual.c.getBornes().forEach(ob => stack.push({c: actual.c, b: ob.id}));
+        }
+    }
+    return red;
+}
+
+function calcularVoltaje(comp) {
+    if(!power) return 0;
+    let hasP = false, hasN = false;
+    comp.getBornes().forEach(b => {
+        let red = obtenerNodosConectados(comp, b.id);
+        componentes.filter(cp => cp.tipo === 'pila').forEach(p => {
+            if(red.has(p.x + "," + p.y + ",+")) hasP = true;
+            if(red.has(p.x + "," + p.y + ",-")) hasN = true;
+        });
+    });
+    return (hasP && hasN) ? 9 : 0;
+}
+
+canvas.onmousedown = e => {
+    let hit = componentes.find(c => Math.hypot(e.clientX-(c.x+40), e.clientY-(c.y+40)) < 45);
+    if(hit) {
+        let clickT = Date.now(); seleccionado = hit; dragging = true; offset.x = e.clientX-hit.x; offset.y = e.clientY-hit.y;
+        canvas.onmouseup = () => {
+            if(Date.now() - clickT < 200 && hit.tipo === 'switch') { hit.on = !hit.on; playSound(hit.on?600:300); }
+            dragging = false; render();
+        };
+        return;
+    }
+    cables.forEach(cb => { cb.points.forEach((p, i) => { if(Math.hypot(e.clientX-p.x, e.clientY-p.y) < 15) dragPoint = {cb, i}; }); });
+    if(!dragPoint) seleccionado = null;
+    render();
+};
+
+canvas.onmousemove = e => {
+    if(dragging && seleccionado) { seleccionado.x = e.clientX-offset.x; seleccionado.y = e.clientY-offset.y; }
+    if(dragPoint) { dragPoint.cb.points[dragPoint.i].x = e.clientX; dragPoint.cb.points[dragPoint.i].y = e.clientY; }
+    if(tempCable) { tempCable.curX = e.clientX; tempCable.curY = e.clientY; }
+    render();
+};
+
+canvas.ondblclick = e => {
+    let b = null; componentes.forEach(c => c.getBornes().forEach(bn => { if(Math.hypot(e.clientX-bn.x, e.clientY-bn.y) < 20) b = bn; }));
+    if(b) {
+        if(!tempCable) tempCable = { sC: b.comp, sB: b.id, x: b.x, y: b.y, curX: e.clientX, curY: e.clientY };
+        else { 
+            if(tempCable.sC !== b.comp) { cables.push({ sC: tempCable.sC, sB: tempCable.sB, eC: b.comp, eB: b.id, points: [{x: (tempCable.x + b.x)/2, y: (tempCable.y + b.y)/2}] }); playSound(800); }
+            tempCable = null; 
+        }
+    }
+    render();
+};
+
+window.onkeydown = e => {
+    if(e.key.toLowerCase() === 'r' && seleccionado) { seleccionado.rot += Math.PI/2; playSound(500); }
+    if((e.key === 'Delete' || e.key === 'Backspace') && seleccionado) {
+        cables = cables.filter(c => c.sC !== seleccionado && c.eC !== seleccionado);
+        componentes.splice(componentes.indexOf(seleccionado), 1); seleccionado = null;
+        playSound(200);
+    }
+    render();
+};
+
+function togglePower() { power = !power; document.getElementById('mainPwr').classList.toggle('pwr-on'); playSound(power ? 1000 : 400); render(); }
+
+function cargarEjemplo(t) {
+    limpiar(); let cx = canvas.width/2, cy = canvas.height/2;
+    if(t === 'serie') {
+        let p = new Componente('pila', cx-180, cy, 9), b1 = new Componente('bombilla', cx-20, cy, 0), b2 = new Componente('bombilla', cx+100, cy, 0);
+        componentes.push(p, b1, b2); cables.push({sC:p, sB:'+', eC:b1, eB:'a', points:[]}, {sC:b1, sB:'b', eC:b2, eB:'a', points:[]}, {sC:b2, sB:'b', eC:p, eB:'-', points:[{x:cx, y:cy+100}]});
+    } else if(t === 'paralelo') {
+        let p = new Componente('pila', cx-180, cy, 9), b1 = new Componente('bombilla', cx, cy-80, 0), b2 = new Componente('bombilla', cx, cy+80, 0);
+        componentes.push(p, b1, b2); cables.push({sC:p, sB:'+', eC:b1, eB:'a', points:[]}, {sC:b1, sB:'a', eC:b2, eB:'a', points:[]}, {sC:b1, sB:'b', eC:b2, eB:'b', points:[]}, {sC:b2, sB:'b', eC:p, eB:'-', points:[{x:cx-180, y:cy+120}]});
+    } else if(t === 'mixto') {
+        let p = new Componente('pila', cx-200, cy, 9), b1 = new Componente('bombilla', cx-50, cy, 0), b2 = new Componente('bombilla', cx+80, cy-60, 0), b3 = new Componente('bombilla', cx+80, cy+60, 0);
+        componentes.push(p, b1, b2, b3); cables.push({sC:p, sB:'+', eC:b1, eB:'a', points:[]}, {sC:b1, sB:'b', eC:b2, eB:'a', points:[]}, {sC:b1, sB:'b', eC:b3, eB:'a', points:[]}, {sC:b2, sB:'b', eC:b3, eB:'b', points:[]}, {sC:b3, sB:'b', eC:p, eB:'-', points:[{x:cx, y:cy+150}]});
+    }
+    render();
+}
+
+function nuevo(t, v) { componentes.push(new Componente(t, canvas.width/2, canvas.height/2, v)); playSound(900); render(); }
+function limpiar() { componentes = []; cables = []; power = false; document.getElementById('mainPwr').classList.remove('pwr-on'); render(); }
+
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#252525"; ctx.lineWidth = 1;
+    for(let i=0; i<canvas.width; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke(); }
+    for(let j=0; j<canvas.height; j+=40) { ctx.beginPath(); ctx.moveTo(0,j); ctx.lineTo(canvas.width,j); ctx.stroke(); }
+    cables.forEach(c => {
+        let b1 = c.sC.getBornes().find(b => b.id === c.sB), b2 = c.eC.getBornes().find(b => b.id === c.eB);
+        ctx.beginPath(); ctx.strokeStyle = power ? "#2ecc71" : "#7f8c8d"; ctx.lineWidth = 4;
+        ctx.moveTo(b1.x, b1.y); c.points.forEach(p => ctx.lineTo(p.x, p.y)); ctx.lineTo(b2.x, b2.y); ctx.stroke();
+    });
+    if(tempCable) { ctx.strokeStyle = "#f1c40f"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(tempCable.x, tempCable.y); ctx.lineTo(tempCable.curX, tempCable.curY); ctx.stroke(); }
+    componentes.forEach(c => c.dibujar());
+    if(power && !gano && nivelActual !== -1 && RETOS[nivelActual].check()) {
+        gano = true; if(nivelActual === nivelMaximo) nivelMaximo++;
+        actualizarBotones(); document.getElementById('win-msg').style.display = "block";
+        if(nivelMaximo === 5) { document.getElementById('win-title').innerText = "¡MODO LIBRE DESBLOQUEADO! 🔓"; document.getElementById('win-text').innerText = "¡Eres un experto!"; }
+        playSound(1200); playSound(1500);
+    }
+    if(power) requestAnimationFrame(render);
+}
+actualizarBotones();
+</script>
+</body>
+</html>
